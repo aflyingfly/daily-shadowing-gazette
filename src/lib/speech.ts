@@ -1,5 +1,6 @@
 // 语音模块
-// 主声源：微软 Edge 神经网络真人语音（经开发服务器 /edge-tts 中转）
+// 主声源：微软 Edge 神经网络真人语音（经开发服务器 /edge-tts 中转，仅本地可用）
+// 线上声源：Google 翻译语音（音质自然，无需任何配置，静态托管也能用）
 // 兜底：本机系统语音（离线也能出声）
 import { synthesizeEdge, EDGE_VOICES } from './edgeTts'
 
@@ -69,6 +70,54 @@ function speakLocal(text: string, rate: number, accent: 'en-US' | 'en-GB', onEnd
   window.speechSynthesis.speak(utter)
 }
 
+// —— Google 翻译语音（线上版声源） ——
+// Audio 元素播放音频不受跨域限制，GitHub Pages 等静态托管可直接使用
+// 接口单次限制约 200 字符，长文本按词边界切块依次播放
+function chunkForTts(text: string, maxLen = 180): string[] {
+  if (text.length <= maxLen) return [text]
+  const chunks: string[] = []
+  let rest = text
+  while (rest.length > maxLen) {
+    let cut = rest.lastIndexOf(' ', maxLen)
+    if (cut < maxLen / 2) cut = maxLen
+    chunks.push(rest.slice(0, cut))
+    rest = rest.slice(cut).trim()
+  }
+  if (rest) chunks.push(rest)
+  return chunks
+}
+
+function speakGoogle(text: string, rate: number, accent: 'en-US' | 'en-GB', onEnd?: () => void) {
+  const tl = accent === 'en-GB' ? 'en-GB' : 'en'
+  const chunks = chunkForTts(text)
+  const session = playSession
+  let idx = 0
+
+  const playNext = () => {
+    if (session !== playSession) return
+    if (idx >= chunks.length) {
+      onEnd?.()
+      return
+    }
+    const q = encodeURIComponent(chunks[idx])
+    const audio = new Audio(`https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=${tl}&q=${q}`)
+    currentAudio = audio
+    audio.playbackRate = rate
+    const fail = () => {
+      if (currentAudio === audio) currentAudio = null
+      if (session === playSession) speakLocal(text, rate, accent, onEnd)
+    }
+    audio.onended = () => {
+      if (currentAudio === audio) currentAudio = null
+      idx++
+      playNext()
+    }
+    audio.onerror = fail
+    audio.play().catch(fail)
+  }
+  playNext()
+}
+
 // UI 语速 -> Edge 合成语速百分比
 function rateToPct(rate: number): number {
   if (rate <= 0.7) return -40
@@ -106,7 +155,7 @@ export function speak(text: string, rate = 1, voiceId: string = DEFAULT_VOICE, o
       })
     })
     .catch(() => {
-      if (session === playSession) speakLocal(text, rate, accent, onEnd)
+      if (session === playSession) speakGoogle(text, rate, accent, onEnd)
     })
 }
 
