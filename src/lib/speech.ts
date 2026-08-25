@@ -100,7 +100,7 @@ function speakGoogle(text: string, rate: number, accent: 'en-US' | 'en-GB', onEn
       return
     }
     const q = encodeURIComponent(chunks[idx])
-    const audio = new Audio(`https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=${tl}&q=${q}`)
+    const audio = new Audio(`https://translate.googleapis.com/translate_tts?ie=UTF-8&client=tw-ob&tl=${tl}&q=${q}&total=1&idx=0`)
     currentAudio = audio
     audio.playbackRate = rate
     const fail = () => {
