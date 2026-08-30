@@ -11,6 +11,23 @@ const IS_LOCAL_DEV =
   typeof location !== 'undefined' &&
   (location.hostname === 'localhost' || location.hostname === '127.0.0.1' || location.hostname === '')
 
+// 页面加载时探测 Google 声源是否可达（3 秒超时）。
+// 不可达则直接首选百度，避免点击播放时白白等待、耗尽浏览器"用户点击"授权窗口
+let googleReachable: boolean | null = null
+if (!IS_LOCAL_DEV && typeof fetch !== 'undefined') {
+  const probeUrl = 'https://translate.googleapis.com/translate_tts?ie=UTF-8&client=tw-ob&tl=en&q=hi&total=1&idx=0'
+  Promise.race([
+    fetch(probeUrl, { mode: 'no-cors' }).then(() => true),
+    new Promise<boolean>((resolve) => window.setTimeout(() => resolve(false), 3000)),
+  ])
+    .then((ok) => {
+      googleReachable = ok
+    })
+    .catch(() => {
+      googleReachable = false
+    })
+}
+
 const VOICE_KEY = 'shadow-gazette-voice'
 export const DEFAULT_VOICE = 'en-US-AvaNeural'
 
@@ -80,8 +97,8 @@ function speakLocal(text: string, rate: number, accent: 'en-US' | 'en-GB', onEnd
 // —— Google 翻译语音（线上首选声源） ——
 // Audio 元素播放音频不受跨域限制，GitHub Pages 等静态托管可直接使用
 // 接口单次限制约 200 字符，长文本按词边界切块依次播放
-// 每块加"卡死看门狗"：5 秒内加载不出数据就自动放弃，转交百度声源
-const STALL_TIMEOUT = 5000
+// 每块加"卡死看门狗"：几秒内加载不出数据就自动放弃，转交百度声源
+const STALL_TIMEOUT = 3500
 
 function chunkForTts(text: string, maxLen = 180): string[] {
   if (text.length <= maxLen) return [text]
@@ -120,7 +137,7 @@ function speakGoogle(text: string, rate: number, accent: 'en-US' | 'en-GB', onEn
     currentAudio = audio
     audio.playbackRate = rate
     stallTimer = window.setTimeout(() => {
-      // 5 秒还没加载出可播放数据，判定为卡死
+      // 超时还没加载出可播放数据，判定为卡死
       if (audio.readyState < 3) {
         if (currentAudio === audio) currentAudio = null
         fail()
@@ -159,8 +176,10 @@ function speakBaidu(text: string, rate: number, accent: 'en-US' | 'en-GB', onEnd
   const chunks = chunkForTts(text)
   const session = playSession
   let idx = 0
+  let stallTimer = 0
 
   const fail = () => {
+    window.clearTimeout(stallTimer)
     if (session === playSession) speakLocal(text, rate, accent, onEnd)
   }
 
@@ -173,16 +192,25 @@ function speakBaidu(text: string, rate: number, accent: 'en-US' | 'en-GB', onEnd
     const q = encodeURIComponent(chunks[idx])
     const audio = new Audio(`https://fanyi.baidu.com/gettts?lan=en&spd=${spd}&source=web&text=${q}`)
     currentAudio = audio
+    stallTimer = window.setTimeout(() => {
+      if (audio.readyState < 3) {
+        if (currentAudio === audio) currentAudio = null
+        fail()
+      }
+    }, STALL_TIMEOUT)
     audio.onended = () => {
+      window.clearTimeout(stallTimer)
       if (currentAudio === audio) currentAudio = null
       idx++
       playNext()
     }
     audio.onerror = () => {
+      window.clearTimeout(stallTimer)
       if (currentAudio === audio) currentAudio = null
       fail()
     }
     audio.play().catch(() => {
+      window.clearTimeout(stallTimer)
       if (currentAudio === audio) currentAudio = null
       fail()
     })
@@ -203,9 +231,11 @@ export function speak(text: string, rate = 1, voiceId: string = DEFAULT_VOICE, o
   const session = playSession
   const accent = voiceAccent(voiceId)
 
-  // 线上静态托管：没有 /edge-tts 中转，直接进入 Google 声源（保住点击授权时效）
+  // 线上静态托管：没有 /edge-tts 中转。
+  // Google 探测失败时直接用百度（国内网络稳定），保住点击授权时效
   if (!IS_LOCAL_DEV) {
-    speakGoogle(text, rate, accent, onEnd)
+    if (googleReachable === false) speakBaidu(text, rate, accent, onEnd)
+    else speakGoogle(text, rate, accent, onEnd)
     return
   }
 
